@@ -1,7 +1,7 @@
 "use client";
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Html, OrthographicCamera, Text } from "@react-three/drei";
+import { Html, PerspectiveCamera, Text } from "@react-three/drei";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { useGameStore, EXTRACTION_SECONDS } from "@/store/gameStore";
@@ -10,7 +10,7 @@ import RouletteOverlay from "./RouletteOverlay";
 
 const BOUND = 18;
 const WAGER_RADIUS = 3.2;
-const EXTRACT_RADIUS = 3.5;
+const EXTRACT_RADIUS = 4;
 const CATCH_RADIUS = 1.6;
 const EXTRACT_POS = new THREE.Vector3(BOUND - 3, 0, BOUND - 3);
 
@@ -302,13 +302,13 @@ function Scene({ setPrompt }) {
 
   return (
     <>
-      <OrthographicCamera
+      <PerspectiveCamera
         ref={camRef}
         makeDefault
+        fov={30}
         position={[22, 24, 22]}
-        zoom={26}
         near={0.1}
-        far={200}
+        far={300}
       />
       <ambientLight intensity={0.6} />
       <directionalLight position={[10, 20, 5]} intensity={1.1} />
@@ -380,7 +380,7 @@ function HudBar({ prompt }) {
         </div>
       )}
 
-      <div className="pointer-events-none absolute right-4 top-4 z-20 text-right text-[11px] text-slate-500">
+      <div className="pointer-events-none absolute bottom-4 right-4 z-20 text-right text-[11px] text-slate-500">
         WASD / click to move · reach EXTRACT to bank tokens
       </div>
     </>
@@ -393,7 +393,7 @@ export default function GameCanvas() {
     <div className="relative h-full w-full">
       <Canvas shadows dpr={[1, 2]} gl={{ antialias: true }}>
         <color attach="background" args={["#06070c"]} />
-        <fog attach="fog" args={["#06070c", 40, 90]} />
+        <fog attach="fog" args={["#06070c", 70, 160]} />
         <Scene setPrompt={setPrompt} />
       </Canvas>
       <HudBar prompt={prompt} />
