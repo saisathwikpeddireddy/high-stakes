@@ -1,131 +1,62 @@
 "use client";
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Html, PerspectiveCamera, Text } from "@react-three/drei";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { PerspectiveCamera, ContactShadows } from "@react-three/drei";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { useGameStore, EXTRACTION_SECONDS } from "@/store/gameStore";
 import WagerOverlay from "./WagerOverlay";
 import RouletteOverlay from "./RouletteOverlay";
+import Lighting from "./three/Lighting";
+import Floor from "./three/Floor";
+import PlayerAvatar from "./three/PlayerAvatar";
+import Npc from "./three/Npc";
+import WagerTable from "./three/WagerTable";
+import ExtractionVault from "./three/ExtractionVault";
+import Effects from "./three/Effects";
+import AttractMode from "./three/AttractMode";
+import { sfx, toggleMute, isMuted } from "@/lib/audio";
+import {
+  BOUND,
+  WAGER_RADIUS,
+  EXTRACT_RADIUS,
+  CATCH_RADIUS,
+  EXTRACT_POS,
+  TABLE_POSITIONS,
+  clampBound,
+} from "./three/constants";
 
-const BOUND = 18;
-const WAGER_RADIUS = 3.2;
-const EXTRACT_RADIUS = 4;
-const CATCH_RADIUS = 1.6;
-const EXTRACT_POS = new THREE.Vector3(BOUND - 3, 0, BOUND - 3);
-
-function clampBound(v) {
-  return Math.max(-BOUND, Math.min(BOUND, v));
-}
-
-function Ground({ onMove }) {
+function Tables() {
   return (
-    <mesh
-      rotation={[-Math.PI / 2, 0, 0]}
-      position={[0, 0, 0]}
-      onPointerDown={(e) => {
-        e.stopPropagation();
-        onMove(e.point.x, e.point.z);
-      }}
-    >
-      <planeGeometry args={[BOUND * 2 + 8, BOUND * 2 + 8]} />
-      <meshStandardMaterial color="#0b1020" />
-    </mesh>
+    <>
+      {TABLE_POSITIONS.map((p, i) => (
+        <WagerTable key={i} position={p} />
+      ))}
+    </>
   );
 }
 
-function Grid() {
-  return (
-    <gridHelper
-      args={[BOUND * 2 + 6, 28, "#1e293b", "#111a2e"]}
-      position={[0, 0.01, 0]}
-    />
-  );
-}
-
-function ExtractionZone() {
-  const ref = useRef();
-  useFrame((_, dt) => {
-    if (ref.current) ref.current.rotation.y += dt * 0.6;
-  });
-  return (
-    <group position={[EXTRACT_POS.x, 0, EXTRACT_POS.z]}>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
-        <ringGeometry args={[EXTRACT_RADIUS - 0.3, EXTRACT_RADIUS, 48]} />
-        <meshBasicMaterial color="#22c55e" transparent opacity={0.6} side={THREE.DoubleSide} />
-      </mesh>
-      <mesh ref={ref} position={[0, 1.2, 0]}>
-        <torusGeometry args={[0.9, 0.12, 12, 32]} />
-        <meshStandardMaterial color="#22c55e" emissive="#16a34a" emissiveIntensity={0.8} />
-      </mesh>
-      <Text position={[0, 2.6, 0]} fontSize={0.7} color="#22c55e" anchorX="center">
-        EXTRACT
-      </Text>
-    </group>
-  );
-}
-
-function TokenLabel({ value, color }) {
-  return (
-    <Html center distanceFactor={26} position={[0, 2.1, 0]} zIndexRange={[10, 0]}>
-      <div
-        style={{ color, borderColor: color }}
-        className="whitespace-nowrap rounded-md border bg-black/70 px-2 py-0.5 text-[11px] font-bold"
-      >
-        {value.toLocaleString()}
-      </div>
-    </Html>
-  );
-}
-
-function Player({ groupRef }) {
-  const tokens = useGameStore((s) => s.playerTokens);
-  const inner = useRef();
-  useFrame((_, dt) => {
-    if (inner.current) inner.current.rotation.y += dt * 1.5;
-  });
-  return (
-    <group ref={groupRef}>
-      <mesh ref={inner} position={[0, 1, 0]}>
-        <octahedronGeometry args={[0.85, 0]} />
-        <meshStandardMaterial color="#38bdf8" emissive="#0ea5e9" emissiveIntensity={0.6} metalness={0.3} />
-      </mesh>
-      <pointLight position={[0, 1.6, 0]} color="#38bdf8" intensity={8} distance={7} />
-      <TokenLabel value={tokens} color="#38bdf8" />
-    </group>
-  );
-}
-
-function Npc({ npc, groupRef }) {
-  const liveNpc = useGameStore((s) => s.npcs.find((n) => n.id === npc.id));
-  const color = liveNpc?.state === "hunter" ? "#f97316" : "#ef4444";
-  const tokens = liveNpc?.tokens ?? npc.tokens;
-  return (
-    <group ref={groupRef}>
-      <mesh position={[0, 0.8, 0]}>
-        <boxGeometry args={[1.3, 1.6, 1.3]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.35} />
-      </mesh>
-      <TokenLabel value={tokens} color={color} />
-    </group>
-  );
-}
-
-function Scene({ setPrompt }) {
+function Scene({ setPrompt, moveRef }) {
   const npcs = useGameStore((s) => s.npcs);
   const playerRef = useRef();
   const npcRefs = useRef({});
   const camRef = useRef();
-  const { camera } = useThree();
 
-  // Live positions (not React state, updated every frame)
   const playerPos = useRef(new THREE.Vector3(0, 0, 0));
   const playerTarget = useRef(new THREE.Vector3(0, 0, 0));
   const keys = useRef({});
   const npcPos = useRef({});
   const lastPromptKey = useRef("");
+  const introT = useRef(0); // push-in easing on match start
 
-  // Init npc positions once per match
+  // Expose click-to-move target setter to the shared Floor raycast.
+  useEffect(() => {
+    if (moveRef) moveRef.current = (x, z) => playerTarget.current.set(clampBound(x), 0, clampBound(z));
+    return () => {
+      if (moveRef) moveRef.current = null;
+    };
+  }, [moveRef]);
+
   useEffect(() => {
     npcPos.current = {};
     npcs.forEach((n) => {
@@ -136,6 +67,7 @@ function Scene({ setPrompt }) {
     });
     playerPos.current.set(0, 0, 0);
     playerTarget.current.set(0, 0, 0);
+    introT.current = 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [npcs.length]);
 
@@ -146,7 +78,6 @@ function Scene({ setPrompt }) {
       if (e.key.toLowerCase() !== "e") return;
       const st = useGameStore.getState();
       if (st.activeWagerNpc !== null || st.extraction) return;
-      // find nearest npc in radius
       let best = null;
       let bestD = WAGER_RADIUS;
       st.npcs.forEach((n) => {
@@ -158,7 +89,10 @@ function Scene({ setPrompt }) {
           best = n.id;
         }
       });
-      if (best !== null) st.openWager(best);
+      if (best !== null) {
+        sfx.click();
+        st.openWager(best);
+      }
     };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
@@ -170,7 +104,7 @@ function Scene({ setPrompt }) {
     };
   }, []);
 
-  useFrame((_, dtRaw) => {
+  useFrame((state, dtRaw) => {
     const dt = Math.min(dtRaw, 0.05);
     const st = useGameStore.getState();
     const paused = st.activeWagerNpc !== null || (st.extraction && st.extraction.phase === "roulette");
@@ -191,7 +125,6 @@ function Scene({ setPrompt }) {
         playerPos.current.z = clampBound(playerPos.current.z + (mz / len) * speed * dt);
         playerTarget.current.copy(playerPos.current);
       } else {
-        // click-to-move
         const to = playerTarget.current.clone().sub(playerPos.current);
         const dist = to.length();
         if (dist > 0.1) {
@@ -204,15 +137,34 @@ function Scene({ setPrompt }) {
     }
     if (playerRef.current) playerRef.current.position.copy(playerPos.current);
 
-    // --- Camera follow (isometric offset) ---
+    // --- Camera follow with intro push-in + trauma shake ---
     if (camRef.current) {
+      introT.current = Math.min(1, introT.current + dt / 1.1);
+      const intro = 1 - Math.pow(1 - introT.current, 3); // easeOutCubic 0->1
+      const zoom = THREE.MathUtils.lerp(1.5, 1.0, intro); // start pulled back, push in
       const desired = new THREE.Vector3(
-        playerPos.current.x + 22,
-        24,
-        playerPos.current.z + 22
+        playerPos.current.x + 22 * zoom,
+        24 * zoom,
+        playerPos.current.z + 22 * zoom
       );
       camRef.current.position.lerp(desired, 0.08);
-      camRef.current.lookAt(playerPos.current.x, 0, playerPos.current.z);
+
+      // trauma-based screen shake (decays)
+      let trauma = st.trauma;
+      if (trauma > 0) {
+        const shake = trauma * trauma;
+        const t = state.clock.elapsedTime * 40;
+        camRef.current.position.x += Math.sin(t) * shake * 1.2;
+        camRef.current.position.y += Math.cos(t * 1.3) * shake * 0.9;
+        st.setTrauma(Math.max(0, trauma - dt * 1.4));
+      }
+
+      const idle = state.clock.elapsedTime;
+      camRef.current.lookAt(
+        playerPos.current.x + Math.sin(idle * 0.3) * 0.15,
+        1 + Math.sin(idle * 0.5) * 0.1,
+        playerPos.current.z
+      );
     }
 
     // --- NPC movement ---
@@ -221,16 +173,15 @@ function Scene({ setPrompt }) {
       const ref = npcRefs.current[n.id];
       if (!data) return;
       if (n.state === "hunter") {
-        // chase player
         const to = playerPos.current.clone().sub(data.pos);
         const dist = to.length();
         if (dist > 0.05) {
           to.normalize();
           data.pos.x = clampBound(data.pos.x + to.x * 7 * dt);
           data.pos.z = clampBound(data.pos.z + to.z * 7 * dt);
+          if (ref) ref.rotation.y = Math.atan2(to.x, to.z);
         }
       } else if (!paused) {
-        // wander toward target, pick new target when close
         const to = data.target.clone().sub(data.pos);
         if (to.length() < 0.6) {
           data.target.set((Math.random() - 0.5) * BOUND * 1.8, 0, (Math.random() - 0.5) * BOUND * 1.8);
@@ -238,6 +189,7 @@ function Scene({ setPrompt }) {
           to.normalize();
           data.pos.x = clampBound(data.pos.x + to.x * 3 * dt);
           data.pos.z = clampBound(data.pos.z + to.z * 3 * dt);
+          if (ref) ref.rotation.y = THREE.MathUtils.lerp(ref.rotation.y, Math.atan2(to.x, to.z), 0.08);
         }
       }
       if (ref) ref.position.copy(data.pos);
@@ -245,6 +197,7 @@ function Scene({ setPrompt }) {
 
     // --- Elimination ---
     if (st.view === "match" && st.playerTokens <= 0 && !st.extraction) {
+      sfx.lose();
       st.eliminatePlayer();
       return;
     }
@@ -252,7 +205,6 @@ function Scene({ setPrompt }) {
     // --- Extraction logic ---
     const distToExtract = playerPos.current.distanceTo(EXTRACT_POS);
     if (!st.extraction && st.activeWagerNpc === null && distToExtract < EXTRACT_RADIUS && st.playerTokens > 0) {
-      // choose nearest npc as hunter
       let hunter = st.npcs[0]?.id ?? 0;
       let bestD = Infinity;
       st.npcs.forEach((n) => {
@@ -264,6 +216,7 @@ function Scene({ setPrompt }) {
           hunter = n.id;
         }
       });
+      sfx.alarm();
       st.startExtraction(hunter);
     }
 
@@ -272,13 +225,16 @@ function Scene({ setPrompt }) {
       const fresh = useGameStore.getState().extraction;
       const hunterPos = npcPos.current[fresh.hunterId]?.pos;
       if (hunterPos && hunterPos.distanceTo(playerPos.current) < CATCH_RADIUS) {
+        st.addTrauma(0.8);
+        sfx.lose();
         st.triggerRoulette();
       } else if (fresh.timeLeft <= 0) {
+        sfx.win();
         st.extractionEscape();
       }
     }
 
-    // --- Proximity prompt (throttled) ---
+    // --- Proximity prompt ---
     let promptKey = "";
     if (!st.extraction && st.activeWagerNpc === null) {
       if (distToExtract < EXTRACT_RADIUS + 2) promptKey = "extract";
@@ -302,44 +258,70 @@ function Scene({ setPrompt }) {
 
   return (
     <>
-      <PerspectiveCamera
-        ref={camRef}
-        makeDefault
-        fov={30}
-        position={[22, 24, 22]}
-        near={0.1}
-        far={300}
-      />
-      <ambientLight intensity={0.6} />
-      <directionalLight position={[10, 20, 5]} intensity={1.1} />
-      <Ground onMove={(x, z) => playerTarget.current.set(clampBound(x), 0, clampBound(z))} />
-      <Grid />
-      <ExtractionZone />
-      <Player groupRef={playerRef} />
+      <PerspectiveCamera ref={camRef} makeDefault fov={30} position={[22, 24, 22]} near={0.1} far={300} />
+      <PlayerAvatar groupRef={playerRef} />
       {npcs.map((n) => (
-        <Npc
-          key={n.id}
-          npc={n}
-          groupRef={(el) => (npcRefs.current[n.id] = el)}
-        />
+        <Npc key={n.id} npc={n} groupRef={(el) => (npcRefs.current[n.id] = el)} />
       ))}
+      <ExtractionVault />
     </>
+  );
+}
+
+// Shared world (always rendered); switches camera/entities on view.
+function World({ setPrompt }) {
+  const view = useGameStore((s) => s.view);
+  const moveRef = useRef(null);
+  return (
+    <>
+      <color attach="background" args={["#160d0d"]} />
+      <fog attach="fog" args={["#160d0d", 42, 130]} />
+      <Lighting />
+      <Floor onMove={(x, z) => moveRef.current?.(x, z)} />
+      <Tables />
+      <ContactShadows position={[0, 0.04, 0]} scale={BOUND * 2.4} blur={2.6} opacity={0.55} far={12} resolution={512} color="#000000" />
+      {view === "match" ? <Scene setPrompt={setPrompt} moveRef={moveRef} /> : <AttractMode />}
+      <Effects />
+    </>
+  );
+}
+
+function RadialTimer({ timeLeft }) {
+  const pct = timeLeft / EXTRACTION_SECONDS;
+  const R = 34;
+  const C = 2 * Math.PI * R;
+  return (
+    <svg width="86" height="86" viewBox="0 0 86 86" className="mx-auto">
+      <circle cx="43" cy="43" r={R} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="6" />
+      <circle
+        cx="43"
+        cy="43"
+        r={R}
+        fill="none"
+        stroke="#ef4444"
+        strokeWidth="6"
+        strokeLinecap="round"
+        strokeDasharray={C}
+        strokeDashoffset={C * (1 - pct)}
+        transform="rotate(-90 43 43)"
+        style={{ transition: "stroke-dashoffset 0.12s linear" }}
+      />
+      <text x="43" y="49" textAnchor="middle" className="fill-white font-display text-[20px] tabular">
+        {timeLeft.toFixed(1)}
+      </text>
+    </svg>
   );
 }
 
 function ExtractionHud() {
   const extraction = useGameStore((s) => s.extraction);
   if (!extraction || extraction.phase !== "running") return null;
-  const pct = (extraction.timeLeft / EXTRACTION_SECONDS) * 100;
   return (
-    <div className="pointer-events-none absolute left-1/2 top-6 z-20 w-80 -translate-x-1/2 text-center">
-      <div className="mb-1 text-xs uppercase tracking-[0.3em] text-danger glow">
-        Extraction · Hunter Inbound
+    <div className="pointer-events-none absolute left-1/2 top-6 z-20 -translate-x-1/2 text-center">
+      <div className="mb-2 text-[11px] uppercase tracking-[0.35em] text-red-400 gold-glow">
+        Cashier Cage · Hunter Inbound
       </div>
-      <div className="text-3xl font-bold text-white">{extraction.timeLeft.toFixed(1)}s</div>
-      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-800">
-        <div className="h-full bg-danger transition-[width] duration-100" style={{ width: `${pct}%` }} />
-      </div>
+      <RadialTimer timeLeft={extraction.timeLeft} />
     </div>
   );
 }
@@ -347,41 +329,53 @@ function ExtractionHud() {
 function HudBar({ prompt }) {
   const playerTokens = useGameStore((s) => s.playerTokens);
   const log = useGameStore((s) => s.log);
+  const [muted, setMutedState] = useState(false);
   return (
     <>
-      <div className="pointer-events-none absolute left-4 top-4 z-20">
-        <div className="panel rounded-xl px-4 py-3">
-          <div className="text-[10px] uppercase tracking-widest text-slate-400">Match Tokens</div>
-          <div className="text-2xl font-bold text-neon glow">{playerTokens.toLocaleString()}</div>
+      <div className="pointer-events-none absolute left-5 top-5 z-20">
+        <div className="lux-panel rounded-2xl px-5 py-3">
+          <div className="text-[10px] uppercase tracking-[0.25em] text-gold/70">Match Tokens</div>
+          <div className="font-display text-3xl font-bold gold-foil tabular">{playerTokens.toLocaleString()}</div>
         </div>
       </div>
 
-      <div className="pointer-events-none absolute bottom-4 left-4 z-20 w-72 space-y-1">
-        {log.map((l) => (
-          <div key={l.id} className="rounded bg-black/60 px-3 py-1 text-[11px] text-slate-300">
+      <button
+        onClick={() => setMutedState(toggleMute())}
+        className="absolute right-5 top-5 z-20 rounded-full hairline-gold bg-black/40 px-3 py-2 text-xs text-gold backdrop-blur transition hover:bg-black/60"
+      >
+        {muted ? "Sound Off" : "Sound On"}
+      </button>
+
+      <div className="pointer-events-none absolute bottom-5 left-5 z-20 w-72 space-y-1">
+        {log.map((l, i) => (
+          <div
+            key={l.id}
+            style={{ opacity: Math.max(0.35, 1 - i * 0.12) }}
+            className="rounded-lg border border-gold/15 bg-black/45 px-3 py-1 text-[11px] text-cream/85 backdrop-blur-sm"
+          >
             {l.msg}
           </div>
         ))}
       </div>
 
       {prompt && (
-        <div className="pointer-events-none absolute bottom-8 left-1/2 z-20 -translate-x-1/2">
-          <div className="panel rounded-full px-5 py-2 text-sm text-white">
+        <div className="pointer-events-none absolute bottom-10 left-1/2 z-20 -translate-x-1/2">
+          <div className="lux-panel rounded-full px-6 py-2.5 text-sm text-cream">
             {prompt === "wager" ? (
               <>
-                Press <span className="font-bold text-gold">E</span> to challenge NPC
+                Press <span className="font-bold text-gold-light">E</span> to sit at the table
               </>
             ) : (
               <>
-                Enter the <span className="font-bold text-emerald-400">Extraction Zone</span> to escape
+                Enter the <span className="font-bold text-gold-light">Cashier Cage</span> to extract
               </>
             )}
           </div>
         </div>
       )}
 
-      <div className="pointer-events-none absolute bottom-4 right-4 z-20 text-right text-[11px] text-slate-500">
-        WASD / click to move · reach EXTRACT to bank tokens
+      <div className="pointer-events-none absolute bottom-5 right-5 z-20 text-right text-[11px] text-cream/40">
+        WASD / click to move · reach the cage to bank tokens
       </div>
     </>
   );
@@ -389,15 +383,18 @@ function HudBar({ prompt }) {
 
 export default function GameCanvas() {
   const [prompt, setPrompt] = useState("");
+  const view = useGameStore((s) => s.view);
   return (
     <div className="relative h-full w-full">
-      <Canvas shadows dpr={[1, 2]} gl={{ antialias: true }}>
-        <color attach="background" args={["#06070c"]} />
-        <fog attach="fog" args={["#06070c", 70, 160]} />
-        <Scene setPrompt={setPrompt} />
+      <Canvas shadows dpr={[1, 1.75]} gl={{ antialias: true }} camera={{ position: [0, 20, 30] }}>
+        <World setPrompt={setPrompt} />
       </Canvas>
-      <HudBar prompt={prompt} />
-      <ExtractionHud />
+      {view === "match" && (
+        <>
+          <HudBar prompt={prompt} />
+          <ExtractionHud />
+        </>
+      )}
       <WagerOverlay />
       <RouletteOverlay />
     </div>

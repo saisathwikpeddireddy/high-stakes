@@ -19,9 +19,13 @@ export const useGameStore = create((set, get) => ({
   extraction: null, // { timeLeft, hunterId, phase: "running" | "caught" | "roulette" }
   lastResult: null, // { outcome, payout, message }
   log: [],
+  trauma: 0, // camera screen-shake energy [0..1], decays each frame
 
   addLog: (msg) =>
     set((s) => ({ log: [{ id: Date.now() + Math.random(), msg }, ...s.log].slice(0, 8) })),
+
+  addTrauma: (amount) => set((s) => ({ trauma: Math.min(1, s.trauma + amount) })),
+  setTrauma: (v) => set({ trauma: v }),
 
   faucet: () => set((s) => ({ hubBalance: s.hubBalance + FAUCET_AMOUNT })),
 
